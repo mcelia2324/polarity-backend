@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="card">
+    <h2>Settings</h2>
+    <form class="settings-form" action="/settings" method="post">
+      <div class="grid">
+        <label>
+          Timezone
+          <input type="text" name="app_timezone" value="{{ app_timezone }}" />
+          <span class="hint">Example: America/Los_Angeles</span>
+        </label>
+
+        <label>
+          Send Hour (0-23)
+          <input type="number" name="send_hour" min="0" max="23" value="{{ send_hour }}" />
+        </label>
+
+        <label>
+          Send Minute (0-59)
+          <input type="number" name="send_minute" min="0" max="59" value="{{ send_minute }}" />
+        </label>
+      </div>
+
+      <h3>OpenAI</h3>
+      <div class="grid">
+        <label>
+          OpenAI API Key
+          <input type="password" name="openai_api_key" placeholder="Leave blank to keep existing" />
+        </label>
+        <label>
+          OpenAI Model
+          <input type="text" name="openai_model" value="{{ openai_model }}" />
+        </label>
+      </div>
+
+      <h3>APNs (Push)</h3>
+      <div class="grid">
+        <label>
+          Key ID
+          <input type="text" name="apns_key_id" value="{{ apns_key_id or '' }}" />
+        </label>
+        <label>
+          Team ID
+          <input type="text" name="apns_team_id" value="{{ apns_team_id or '' }}" />
+        </label>
+        <label>
+          Bundle ID
+          <input type="text" name="apns_bundle_id" value="{{ apns_bundle_id or '' }}" />
+        </label>
+        <label>
+          Auth Key (.p8 contents or file path)
+          <input type="password" name="apns_auth_key" placeholder="Leave blank to keep existing" />
+        </label>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" name="apns_use_sandbox" {% if apns_use_sandbox %}checked{% endif %} />
+        Use APNs Sandbox (development)
+      </label>
+
+      <div class="actions">
+        <button type="submit">Save Settings</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

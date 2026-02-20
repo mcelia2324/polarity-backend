@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Polarity</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">P</div>
+        <div>
+          <h1>Polarity</h1>
+          <p>Daily contrasting words for reflection.</p>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="/">Home</a>
+        <a href="/settings">Settings</a>
+      </nav>
+    </header>
+
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+      Inspired by the polarity work of David R. Hawkins.
+    </footer>
+  </body>
+</html>

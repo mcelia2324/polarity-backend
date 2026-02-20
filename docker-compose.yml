@@ -1,0 +1,24 @@
+services:
+  app:
+    build: .
+    env_file: .env
+    ports:
+      - "8069:8000"
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: polarity
+      POSTGRES_PASSWORD: polarity
+      POSTGRES_DB: polarity
+    ports:
+      - "5455:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  pgdata:

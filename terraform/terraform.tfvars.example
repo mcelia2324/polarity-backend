@@ -1,0 +1,23 @@
+project_id  = "polarity-488001"
+region      = "us-east1"
+environment = "prod"
+
+app_timezone = "America/Chicago"
+send_hour    = 8
+send_minute  = 0
+
+apns_bundle_id = "mcelia.PolarityApp"
+
+# Set sensitive values via environment variables:
+#   export TF_VAR_db_password="..."
+#   export TF_VAR_openai_api_key="..."
+#   export TF_VAR_apns_key_p8="$(cat path/to/AuthKey.p8)"
+#   export TF_VAR_apns_key_id="..."
+#   export TF_VAR_apns_team_id="..."
+#
+# Or uncomment and set here (DO NOT commit this file):
+# db_password    = ""
+# openai_api_key = ""
+# apns_key_p8    = ""
+# apns_key_id    = ""
+# apns_team_id   = ""

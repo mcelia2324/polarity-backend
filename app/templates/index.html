@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="card hero">
+    <div class="hero-header">
+      <div>
+        <div class="eyebrow">{{ today.strftime('%B %d, %Y') }}</div>
+        <h2>Today's Polarity</h2>
+      </div>
+      <form action="/send-now" method="post">
+        <button class="ghost" type="submit">Send Now</button>
+      </form>
+    </div>
+
+    {% if error %}
+      <div class="alert">
+        {{ error }}
+      </div>
+    {% endif %}
+
+    {% if pair %}
+      <div class="pair">
+        {{ pair }}
+      </div>
+      <p class="hint">Reflect on what each word means to you and which calibrates higher.</p>
+    {% else %}
+      <p class="hint">Configure an LLM provider in Settings to generate a daily pair.</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h3>Journal Entry</h3>
+    <form class="journal-form" action="/journal" method="post">
+      <label>
+        Date
+        <input type="date" name="entry_date" value="{{ today.isoformat() }}" />
+      </label>
+      <label>
+        Reflection
+        <textarea name="note" rows="4" placeholder="What do these words reveal to you?"></textarea>
+      </label>
+      <button type="submit">Save Reflection</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h3>Journaled Days</h3>
+    {% if journal_rows %}
+      <div class="journal-list">
+        {% for entry, pair in journal_rows %}
+          <article class="journal-item">
+            <div>
+              <div class="eyebrow">{{ entry.date.strftime('%B %d, %Y') }}</div>
+              <div class="pair small">
+                {% if pair %}
+                  {{ pair.word_a.title() }} vs {{ pair.word_b.title() }}
+                {% else %}
+                  Pair not available
+                {% endif %}
+              </div>
+            </div>
+            <p>{{ entry.note }}</p>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="hint">No journal entries yet.</p>
+    {% endif %}
+  </section>
+{% endblock %}

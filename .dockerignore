@@ -1,0 +1,12 @@
+terraform/
+tests/
+.env
+.env.*
+.git/
+.gitignore
+*.md
+!README.md
+__pycache__/
+*.pyc
+.pytest_cache/
+docker-compose.yml

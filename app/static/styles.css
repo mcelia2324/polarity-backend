@@ -1,0 +1,235 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600&family=Space+Grotesk:wght@400;500;600&display=swap');
+
+:root {
+  --bg: #f5f1ea;
+  --bg-accent: #efe7db;
+  --ink: #1e1a16;
+  --muted: #6c5f52;
+  --accent: #b65c2e;
+  --accent-dark: #7a3718;
+  --card: #fff9f2;
+  --border: #e2d6c9;
+  --shadow: 0 18px 40px rgba(30, 26, 22, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Space Grotesk', sans-serif;
+  color: var(--ink);
+  background: radial-gradient(circle at top, var(--bg-accent), var(--bg));
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2.5rem 6vw 1.5rem;
+}
+
+.brand {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.brand-mark {
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  background: var(--accent);
+  color: white;
+  font-family: 'Fraunces', serif;
+  display: grid;
+  place-items: center;
+  font-size: 1.5rem;
+}
+
+.brand h1 {
+  font-family: 'Fraunces', serif;
+  font-size: 2rem;
+  margin-bottom: 0.2rem;
+}
+
+.brand p {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.nav a {
+  margin-left: 1rem;
+  text-decoration: none;
+  color: var(--ink);
+  font-weight: 500;
+  padding: 0.4rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.nav a:hover {
+  border-color: var(--border);
+  background: #fff;
+}
+
+.content {
+  padding: 0 6vw 3rem;
+  display: grid;
+  gap: 1.5rem;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 1.8rem;
+  box-shadow: var(--shadow);
+}
+
+.hero {
+  background: linear-gradient(135deg, #fff9f2, #f6eadf);
+}
+
+.hero-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.2rem;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+.pair {
+  font-family: 'Fraunces', serif;
+  font-size: 2.5rem;
+  letter-spacing: 0.02em;
+  margin: 0.6rem 0 0.8rem;
+}
+
+.pair.small {
+  font-size: 1.4rem;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.alert {
+  background: #fff2f0;
+  color: #8b2d2a;
+  border: 1px solid #f0c9c3;
+  padding: 0.8rem 1rem;
+  border-radius: 12px;
+  margin-bottom: 1rem;
+}
+
+button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 0.6rem 1.2rem;
+  border-radius: 999px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--accent-dark);
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--accent-dark);
+  border: 1px solid var(--accent);
+}
+
+.journal-form,
+.settings-form {
+  display: grid;
+  gap: 1rem;
+}
+
+label {
+  display: grid;
+  gap: 0.4rem;
+  font-weight: 500;
+}
+
+input,
+select,
+textarea {
+  padding: 0.65rem 0.8rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 0.95rem;
+  background: #fff;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.journal-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.journal-item {
+  padding: 1.2rem;
+  border-radius: 16px;
+  background: #fff;
+  border: 1px solid var(--border);
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.actions {
+  margin-top: 1rem;
+}
+
+.footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 2rem 0 3rem;
+}
+
+@media (max-width: 700px) {
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .hero-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .pair {
+    font-size: 2rem;
+  }
+}
