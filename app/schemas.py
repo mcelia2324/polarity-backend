@@ -11,6 +11,8 @@ class WordPairResponse(BaseModel):
     word_b: str
     word_a_definition: str | None = None
     word_b_definition: str | None = None
+    quote: str | None = None
+    quote_author: str | None = None
 
 
 class HistoryResponse(BaseModel):

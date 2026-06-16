@@ -47,6 +47,32 @@ BANNED_TRIVIAL = {
     "out",
 }
 
+# Curated contrasting pairs (Power vs Force style), used ONLY as a last-resort fallback if the
+# LLM somehow cannot produce a novel pair. Each candidate is still checked for word-level
+# uniqueness before use, so the daily prompt can never hard-fail with a 500.
+FALLBACK_PAIRS: list[tuple[str, str]] = [
+    ("courage", "intimidation"),
+    ("acceptance", "denial"),
+    ("serenity", "agitation"),
+    ("willingness", "resistance"),
+    ("compassion", "indifference"),
+    ("gratitude", "entitlement"),
+    ("humility", "arrogance"),
+    ("forgiveness", "resentment"),
+    ("devotion", "apathy"),
+    ("temperance", "indulgence"),
+    ("clarity", "confusion"),
+    ("trust", "suspicion"),
+    ("generosity", "greed"),
+    ("authenticity", "pretense"),
+    ("equanimity", "reactivity"),
+    ("discernment", "gullibility"),
+    ("magnanimity", "pettiness"),
+    ("fortitude", "timidity"),
+    ("reverence", "contempt"),
+    ("surrender", "control"),
+]
+
 
 class WordGenerationError(RuntimeError):
     pass
@@ -114,11 +140,14 @@ class WordService:
         )
         return [row[0] for row in result.all()]
 
-    def _build_request(self, recent_words: Iterable[str]) -> LLMRequest:
-        avoid = ", ".join(recent_words)
+    def _build_request(self, avoid_words: Iterable[str]) -> LLMRequest:
+        avoid = ", ".join(avoid_words)
         user_prompt = "Provide one pair for today's reflection."
         if avoid:
-            user_prompt += f" Avoid these words: {avoid}."
+            user_prompt += (
+                " These words are already taken and must NOT be used (avoid close variants too): "
+                f"{avoid}. Pick two genuinely different words that are not in that list."
+            )
         system_prompt = (
             "You generate two contrasting single English words inspired by David R. Hawkins' "
             "Power vs Force framework. Choose words with deep inner meaning (states of consciousness, "
@@ -135,15 +164,30 @@ class WordService:
         )
         return result.first() is None
 
-    async def ensure_pair_for_date(self, date: dt.date) -> WordPair:
+    async def ensure_pair_for_date(self, date: dt.date, max_attempts: int = 40) -> WordPair:
         existing = await self.get_pair_for_date(date)
         if existing:
             return existing
 
         recent_words = await self._get_recent_used_words()
-        request = self._build_request(recent_words)
+        # Words the model has already proposed this run that turned out to be taken or trivial.
+        # We feed these back into every prompt so the model stops repeating the same word
+        # (e.g. fixating on "integrity") and keeps moving toward a genuinely unused pair.
+        session_rejects: list[str] = []
+        session_seen: set[str] = set()
 
-        for attempt in range(1, 17):
+        def _reject(*words: str) -> None:
+            for w in words:
+                if w and w not in session_seen:
+                    session_seen.add(w)
+                    session_rejects.append(w)
+
+        for attempt in range(1, max_attempts + 1):
+            # Rejected words first (most important), then recent history, capped to keep the
+            # prompt focused. The DB check below still enforces uniqueness against ALL used words.
+            prompt_avoid = session_rejects + [w for w in recent_words[:40] if w not in session_seen]
+            request = self._build_request(prompt_avoid)
+
             raw = await self._llm.generate(request)
             parsed = parse_two_words(raw)
             if not parsed:
@@ -152,11 +196,49 @@ class WordService:
             word_a, word_b = parsed
             if word_a in BANNED_TRIVIAL or word_b in BANNED_TRIVIAL:
                 logger.info("Filtered trivial pair on attempt %d: %s, %s", attempt, word_a, word_b)
+                _reject(word_a, word_b)
                 continue
             if not await self._words_available(word_a, word_b):
                 logger.info("Duplicate word(s) on attempt %d: %s, %s", attempt, word_a, word_b)
+                _reject(word_a, word_b)
                 continue
 
+            pair = WordPair(date=date, word_a=word_a, word_b=word_b)
+            try:
+                self._session.add(pair)
+                self._session.add(UsedWord(word=word_a, pair=pair))
+                self._session.add(UsedWord(word=word_b, pair=pair))
+                await self._session.commit()
+                logger.info("Generated pair for %s on attempt %d: %s, %s", date, attempt, word_a, word_b)
+                return pair
+            except IntegrityError:
+                await self._session.rollback()
+                existing = await self.get_pair_for_date(date)
+                if existing:
+                    return existing
+                _reject(word_a, word_b)
+                continue
+
+        # Safety net: the model never produced a novel pair (extremely unlikely with feedback).
+        # Use a curated contrasting pair whose words are both still unused so the daily prompt
+        # never hard-fails with a 500.
+        fallback = await self._fallback_pair(date)
+        if fallback is not None:
+            logger.warning(
+                "LLM exhausted %d attempts for %s; used curated fallback: %s, %s",
+                max_attempts, date, fallback.word_a, fallback.word_b,
+            )
+            return fallback
+
+        raise WordGenerationError("Unable to generate a new unique word pair after several attempts.")
+
+    async def _fallback_pair(self, date: dt.date) -> WordPair | None:
+        """Return the first curated contrasting pair whose words are both still unused."""
+        for word_a, word_b in FALLBACK_PAIRS:
+            if word_a in BANNED_TRIVIAL or word_b in BANNED_TRIVIAL:
+                continue
+            if not await self._words_available(word_a, word_b):
+                continue
             pair = WordPair(date=date, word_a=word_a, word_b=word_b)
             try:
                 self._session.add(pair)
@@ -170,5 +252,4 @@ class WordService:
                 if existing:
                     return existing
                 continue
-
-        raise WordGenerationError("Unable to generate a new unique word pair after several attempts.")
+        return None

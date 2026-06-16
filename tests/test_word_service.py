@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.db import Base
 from app.services.llm.base import LLMProvider, LLMRequest
-from app.services.word_service import format_pair_display, parse_two_words, WordService
+from app.services.word_service import FALLBACK_PAIRS, format_pair_display, parse_two_words, WordService
 
 
 class StubLLM(LLMProvider):
@@ -63,15 +63,62 @@ async def test_ensure_pair_unique_across_days():
     engine, session_factory = await _setup_db()
 
     async with session_factory() as session:
-        llm = StubLLM(["light, dark"])
+        llm = StubLLM(["hope, fear"])
         service = WordService(session, llm)
         pair = await service.ensure_pair_for_date(dt.date(2026, 2, 4))
-        assert {pair.word_a, pair.word_b} == {"light", "dark"}
+        assert {pair.word_a, pair.word_b} == {"hope", "fear"}
 
+    # Day 2: the model first repeats the already-used pair, then offers a fresh one.
     async with session_factory() as session:
-        llm = StubLLM(["light, dark", "hope, fear"])
+        llm = StubLLM(["hope, fear", "humility, pride"])
         service = WordService(session, llm)
         pair = await service.ensure_pair_for_date(dt.date(2026, 2, 5))
-        assert {pair.word_a, pair.word_b} == {"hope", "fear"}
+        assert {pair.word_a, pair.word_b} == {"humility", "pride"}
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_keeps_going_past_fixated_used_word():
+    """Regression for the 'integrity' fixation: the model repeats one already-used word
+    several times before offering a novel pair; the loop must keep going and succeed."""
+    engine, session_factory = await _setup_db()
+
+    async with session_factory() as session:
+        llm = StubLLM(["integrity, apathy"])
+        service = WordService(session, llm)
+        await service.ensure_pair_for_date(dt.date(2026, 2, 4))
+
+    async with session_factory() as session:
+        # "integrity" is taken; the model keeps proposing it, then finally varies.
+        llm = StubLLM([
+            "integrity, malice",
+            "integrity, sloth",
+            "integrity, vanity",
+            "courage, despair",
+        ])
+        service = WordService(session, llm)
+        pair = await service.ensure_pair_for_date(dt.date(2026, 2, 5))
+        assert {pair.word_a, pair.word_b} == {"courage", "despair"}
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_falls_back_to_curated_pair_when_llm_exhausted():
+    """If the model never produces a novel pair, a curated unused pair is used instead of 500-ing."""
+    engine, session_factory = await _setup_db()
+
+    async with session_factory() as session:
+        llm = StubLLM(["hope, fear"])
+        service = WordService(session, llm)
+        await service.ensure_pair_for_date(dt.date(2026, 2, 4))
+
+    async with session_factory() as session:
+        # The model only ever returns the already-used pair.
+        llm = StubLLM(["hope, fear", "hope, fear", "hope, fear"])
+        service = WordService(session, llm)
+        pair = await service.ensure_pair_for_date(dt.date(2026, 2, 5), max_attempts=3)
+        assert (pair.word_a, pair.word_b) in FALLBACK_PAIRS
 
     await engine.dispose()

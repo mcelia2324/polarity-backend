@@ -21,12 +21,13 @@ class DefinitionService:
         if existing:
             return existing.definition
 
-        definition = await self._fetch_dictionary_definition(normalized)
-        source = "dictionaryapi"
+        # LLM-first: richer, reflection-oriented definitions
+        definition = await self._generate_definition_with_llm(normalized)
+        source = "openai"
 
         if not definition:
-            definition = await self._generate_definition_with_llm(normalized)
-            source = "openai"
+            definition = await self._fetch_dictionary_definition(normalized)
+            source = "dictionaryapi"
 
         if not definition:
             definition = "Definition unavailable."
@@ -73,13 +74,17 @@ class DefinitionService:
     async def _generate_definition_with_llm(self, word: str) -> str | None:
         prompt = LLMRequest(
             system_prompt=(
-                "You are a concise dictionary editor. "
-                "Return one plain-English definition in under 22 words. "
-                "Return only the definition text."
+                "You are writing definitions for a reflective journaling app called Polarity. "
+                "Each day, users receive two contrasting words and journal about them. "
+                "Write a clear, thoughtful definition in 2-3 sentences that helps someone "
+                "understand the word deeply — not just its dictionary meaning, but how it "
+                "shows up in human experience, emotions, and behavior. "
+                "Write in plain English. Do not include the word itself at the start. "
+                "Return only the definition text, no quotes or labels."
             ),
-            user_prompt=f"Define the word '{word}' for reflective self-inquiry context.",
-            temperature=0.2,
-            max_tokens=48,
+            user_prompt=f"Define '{word}' for someone reflecting on it in a journaling context.",
+            temperature=0.4,
+            max_tokens=150,
         )
         try:
             raw = await self._llm.generate(prompt)
@@ -90,11 +95,10 @@ class DefinitionService:
     def _normalize_definition(self, raw: str) -> str | None:
         if not raw:
             return None
-        first_line = raw.strip().splitlines()[0].strip().strip("\"'")
-        # Keep a compact single-sentence definition.
-        cleaned = re.sub(r"\s+", " ", first_line)
+        text = raw.strip().strip("\"'")
+        cleaned = re.sub(r"\s+", " ", text)
         if not cleaned:
             return None
-        if len(cleaned) > 180:
-            cleaned = cleaned[:177].rstrip() + "..."
+        if len(cleaned) > 500:
+            cleaned = cleaned[:497].rstrip() + "..."
         return cleaned
