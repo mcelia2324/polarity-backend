@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response as StarletteResponse
 
@@ -301,12 +301,14 @@ async def cron_daily(x_cron_secret: str | None = Header(None, alias="X-Cron-Secr
 @app.post("/cron/backfill")
 async def cron_backfill(
     date: str,
+    force: bool = False,
     x_cron_secret: str | None = Header(None, alias="X-Cron-Secret"),
 ):
     """Generate the pair (and cache definitions) for a specific date, e.g. to fill a gap.
 
-    Guarded by the cron secret. Idempotent: if a pair already exists for the date it is
-    returned unchanged. Does not send push notifications.
+    Guarded by the cron secret. Idempotent by default: if a pair already exists for the date it
+    is returned unchanged. Pass force=true to discard an existing pair and regenerate it (the old
+    words stay marked used, so they are not reused). Does not send push notifications.
     """
     expected = env_settings.cron_secret
     if not expected or x_cron_secret != expected:
@@ -317,6 +319,11 @@ async def cron_backfill(
         raise HTTPException(status_code=400, detail="Invalid date; expected YYYY-MM-DD")
 
     async with SessionLocal() as session:
+        if force:
+            # Direct DELETE so the DB's ON DELETE SET NULL handles referencing rows (async-safe,
+            # no ORM lazy-load). Used/journal rows keep their words but detach from the pair.
+            await session.execute(delete(WordPair).where(WordPair.date == target))
+            await session.commit()
         store = SettingsStore(session)
         provider = await build_provider(store)
         word_service = WordService(session, provider)

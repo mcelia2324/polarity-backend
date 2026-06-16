@@ -8,12 +8,19 @@ from typing import Iterable
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from wordfreq import zipf_frequency
 
 from app.models import UsedWord, WordPair
 from app.services.llm import LLMProvider, LLMRequest
 
 WORD_RE = re.compile(r"^[A-Za-z]+$")
 logger = logging.getLogger(__name__)
+
+# Minimum word-frequency (wordfreq "zipf" scale) for a generated word to be accepted. Real
+# reflection words score ~1.75+ (e.g. deceitfulness 1.75, magnanimity 2.2); concatenated
+# non-words the model sometimes emits to satisfy the single-word format (e.g. "innerstillness",
+# "selfrighteousness") score ~0, so this cleanly rejects them.
+MIN_WORD_ZIPF = 1.5
 BANNED_TRIVIAL = {
     "up",
     "down",
@@ -47,30 +54,23 @@ BANNED_TRIVIAL = {
     "out",
 }
 
-# Curated contrasting pairs (Power vs Force style), used ONLY as a last-resort fallback if the
-# LLM somehow cannot produce a novel pair. Each candidate is still checked for word-level
-# uniqueness before use, so the daily prompt can never hard-fail with a 500.
-FALLBACK_PAIRS: list[tuple[str, str]] = [
-    ("courage", "intimidation"),
-    ("acceptance", "denial"),
-    ("serenity", "agitation"),
-    ("willingness", "resistance"),
-    ("compassion", "indifference"),
-    ("gratitude", "entitlement"),
-    ("humility", "arrogance"),
-    ("forgiveness", "resentment"),
-    ("devotion", "apathy"),
-    ("temperance", "indulgence"),
-    ("clarity", "confusion"),
-    ("trust", "suspicion"),
-    ("generosity", "greed"),
-    ("authenticity", "pretense"),
-    ("equanimity", "reactivity"),
-    ("discernment", "gullibility"),
-    ("magnanimity", "pettiness"),
-    ("fortitude", "timidity"),
-    ("reverence", "contempt"),
-    ("surrender", "control"),
+# Curated word pools for the last-resort fallback (Power vs Force style). The generator pairs the
+# first still-unused "higher" (virtue) word with the first still-unused "lower" (vice) word, so a
+# valid contrasting pair stays available even as the used-word set grows — far more robust than
+# fixed pairs. Only reached if the LLM can't produce a novel pair, so the daily prompt never 500s.
+FALLBACK_HIGHER: list[str] = [
+    "courage", "acceptance", "serenity", "willingness", "compassion", "gratitude", "humility",
+    "forgiveness", "devotion", "temperance", "clarity", "trust", "generosity", "authenticity",
+    "equanimity", "discernment", "magnanimity", "fortitude", "reverence", "patience", "kindness",
+    "honesty", "wisdom", "empathy", "resilience", "optimism", "sincerity", "benevolence",
+    "graciousness", "tranquility", "humor", "tenderness", "loyalty", "respect", "hope",
+]
+FALLBACK_LOWER: list[str] = [
+    "intimidation", "denial", "agitation", "resistance", "indifference", "entitlement", "arrogance",
+    "resentment", "apathy", "indulgence", "confusion", "suspicion", "greed", "pretense", "reactivity",
+    "gullibility", "pettiness", "timidity", "contempt", "impatience", "cruelty", "folly", "callousness",
+    "fragility", "pessimism", "insincerity", "malice", "hostility", "envy", "vanity", "blame",
+    "complacency", "scorn", "deception", "despair",
 ]
 
 
@@ -85,6 +85,12 @@ def _normalize_word(raw: str) -> str | None:
     if not WORD_RE.match(cleaned):
         return None
     return cleaned.lower()
+
+
+def _is_common_word(word: str) -> bool:
+    """Reject nonsense/concatenated tokens (e.g. 'innerstillness') the model sometimes emits to
+    satisfy the single-word format. Real words score well above MIN_WORD_ZIPF; glued tokens ~0."""
+    return zipf_frequency(word, "en") >= MIN_WORD_ZIPF
 
 
 def parse_two_words(text: str) -> tuple[str, str] | None:
@@ -154,6 +160,9 @@ class WordService:
             "virtues vs vices, or power vs force dynamics). Avoid trivial physical or directional "
             "opposites (up/down, hot/cold, left/right, big/small, light/dark), colors, numbers, "
             "or generic yes/no. The words should feel substantial for journaling and reflection. "
+            "Each must be a single, common, real English dictionary word (for example: courage, "
+            "apathy, humility, resentment) — never a compound, concatenation, hyphenated word, or "
+            "multi-word phrase. "
             "Return exactly two lowercase words separated by a comma, and nothing else."
         )
         return LLMRequest(system_prompt=system_prompt, user_prompt=user_prompt, temperature=0.9, max_tokens=16)
@@ -198,6 +207,10 @@ class WordService:
                 logger.info("Filtered trivial pair on attempt %d: %s, %s", attempt, word_a, word_b)
                 _reject(word_a, word_b)
                 continue
+            if not _is_common_word(word_a) or not _is_common_word(word_b):
+                logger.info("Filtered non-dictionary word(s) on attempt %d: %s, %s", attempt, word_a, word_b)
+                _reject(word_a, word_b)
+                continue
             if not await self._words_available(word_a, word_b):
                 logger.info("Duplicate word(s) on attempt %d: %s, %s", attempt, word_a, word_b)
                 _reject(word_a, word_b)
@@ -232,24 +245,33 @@ class WordService:
 
         raise WordGenerationError("Unable to generate a new unique word pair after several attempts.")
 
-    async def _fallback_pair(self, date: dt.date) -> WordPair | None:
-        """Return the first curated contrasting pair whose words are both still unused."""
-        for word_a, word_b in FALLBACK_PAIRS:
-            if word_a in BANNED_TRIVIAL or word_b in BANNED_TRIVIAL:
-                continue
-            if not await self._words_available(word_a, word_b):
-                continue
-            pair = WordPair(date=date, word_a=word_a, word_b=word_b)
-            try:
-                self._session.add(pair)
-                self._session.add(UsedWord(word=word_a, pair=pair))
-                self._session.add(UsedWord(word=word_b, pair=pair))
-                await self._session.commit()
-                return pair
-            except IntegrityError:
-                await self._session.rollback()
-                existing = await self.get_pair_for_date(date)
-                if existing:
-                    return existing
-                continue
+    async def _first_available(self, candidates: list[str]) -> str | None:
+        """First candidate word that is not in BANNED_TRIVIAL and has never been used."""
+        result = await self._session.execute(
+            select(UsedWord.word).where(UsedWord.word.in_(candidates))
+        )
+        used = {row[0] for row in result.all()}
+        for word in candidates:
+            if word not in used and word not in BANNED_TRIVIAL:
+                return word
         return None
+
+    async def _fallback_pair(self, date: dt.date) -> WordPair | None:
+        """Pair the first still-unused 'higher' word with the first still-unused 'lower' word."""
+        higher = await self._first_available(FALLBACK_HIGHER)
+        lower = await self._first_available(FALLBACK_LOWER)
+        if higher is None or lower is None or higher == lower:
+            return None
+        pair = WordPair(date=date, word_a=higher, word_b=lower)
+        try:
+            self._session.add(pair)
+            self._session.add(UsedWord(word=higher, pair=pair))
+            self._session.add(UsedWord(word=lower, pair=pair))
+            await self._session.commit()
+            return pair
+        except IntegrityError:
+            await self._session.rollback()
+            existing = await self.get_pair_for_date(date)
+            if existing:
+                return existing
+            return None

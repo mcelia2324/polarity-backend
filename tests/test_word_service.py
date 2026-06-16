@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.db import Base
 from app.services.llm.base import LLMProvider, LLMRequest
-from app.services.word_service import FALLBACK_PAIRS, format_pair_display, parse_two_words, WordService
+from app.services.word_service import FALLBACK_HIGHER, FALLBACK_LOWER, format_pair_display, parse_two_words, WordService
 
 
 class StubLLM(LLMProvider):
@@ -119,6 +119,20 @@ async def test_falls_back_to_curated_pair_when_llm_exhausted():
         llm = StubLLM(["hope, fear", "hope, fear", "hope, fear"])
         service = WordService(session, llm)
         pair = await service.ensure_pair_for_date(dt.date(2026, 2, 5), max_attempts=3)
-        assert (pair.word_a, pair.word_b) in FALLBACK_PAIRS
+        assert pair.word_a in FALLBACK_HIGHER and pair.word_b in FALLBACK_LOWER
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_rejects_concatenated_non_words():
+    """Regression: glued non-words like 'innerstillness' are rejected; the next clean pair wins."""
+    engine, session_factory = await _setup_db()
+
+    async with session_factory() as session:
+        llm = StubLLM(["innerstillness, selfrighteousness", "humility, arrogance"])
+        service = WordService(session, llm)
+        pair = await service.ensure_pair_for_date(dt.date(2026, 2, 4))
+        assert {pair.word_a, pair.word_b} == {"humility", "arrogance"}
 
     await engine.dispose()
