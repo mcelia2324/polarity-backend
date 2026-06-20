@@ -77,9 +77,11 @@ class DefinitionService:
                 "You are writing definitions for a reflective journaling app called Polarity. "
                 "Each day, users receive two contrasting words and journal about them. "
                 "Write a clear, thoughtful definition in 2-3 sentences that helps someone "
-                "understand the word deeply — not just its dictionary meaning, but how it "
+                "understand the word deeply: not just its dictionary meaning, but how it "
                 "shows up in human experience, emotions, and behavior. "
-                "Write in plain English. Do not include the word itself at the start. "
+                "Write in plain English with simple punctuation. Never use em dashes, en dashes, "
+                "or double hyphens; use commas, periods, or colons instead. "
+                "Do not include the word itself at the start. "
                 "Return only the definition text, no quotes or labels."
             ),
             user_prompt=f"Define '{word}' for someone reflecting on it in a journaling context.",

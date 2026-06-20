@@ -21,6 +21,7 @@ from app.services.definition_service import DefinitionService
 from app.services.llm import build_provider
 from app.services.push.apns import APNSClient
 from app.services.settings_store import SettingsStore
+from app.services.text_utils import normalize_dashes
 from app.services.word_service import WordService, format_pair_display
 
 logging.basicConfig(level=logging.INFO)
@@ -136,7 +137,7 @@ PRIVACY_POLICY_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Privacy Policy — Polarity Journal</title>
+<title>Polarity Journal Privacy Policy</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
          max-width: 680px; margin: 0 auto; padding: 24px 16px; line-height: 1.6;
@@ -177,7 +178,7 @@ Your privacy is important to us. This policy explains what data we collect and h
 </ul>
 
 <h2>Third-Party Services</h2>
-<p>The App uses OpenAI's API to generate daily word pairs. No personal data is sent to OpenAI —
+<p>The App uses OpenAI's API to generate daily word pairs. No personal data is sent to OpenAI,
 only requests for word generation.</p>
 
 <h2>Data Storage &amp; Security</h2>
@@ -206,7 +207,7 @@ async def privacy_policy():
 
 
 # ---------------------------------------------------------------------------
-# Cron endpoint (replaces APScheduler — called by Cloud Scheduler)
+# Cron endpoint (replaces APScheduler, called by Cloud Scheduler)
 # ---------------------------------------------------------------------------
 
 async def _run_daily() -> dict:
@@ -378,11 +379,11 @@ async def api_word_of_day():
             "date": today_str,
             "word_a": pair.word_a,
             "word_b": pair.word_b,
-            "word_a_definition": word_a_definition,
-            "word_b_definition": word_b_definition,
-            "quote": daily.quote,
-            "quote_author": daily.quote_author,
-            "contemplation": daily.contemplation,
+            "word_a_definition": normalize_dashes(word_a_definition),
+            "word_b_definition": normalize_dashes(word_b_definition),
+            "quote": normalize_dashes(daily.quote),
+            "quote_author": normalize_dashes(daily.quote_author),
+            "contemplation": normalize_dashes(daily.contemplation),
         }
 
         # Cache and evict stale entries (keep only today)
@@ -420,8 +421,8 @@ async def api_history(days: int = 30):
                 date=row.date,
                 word_a=row.word_a,
                 word_b=row.word_b,
-                word_a_definition=defs.get(row.word_a.strip().lower()),
-                word_b_definition=defs.get(row.word_b.strip().lower()),
+                word_a_definition=normalize_dashes(defs.get(row.word_a.strip().lower())),
+                word_b_definition=normalize_dashes(defs.get(row.word_b.strip().lower())),
             )
             for row in pairs
         ]

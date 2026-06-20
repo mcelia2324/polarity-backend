@@ -17,7 +17,7 @@ class DailyContentService:
     """Generates and persists the daily quote + guided contemplation once per day for everyone.
 
     Cost stays flat (one generation per day, globally) no matter how many users or instances there
-    are — the same cheap "generate once, serve from storage" pattern as the word pair itself.
+    are. This is the same cheap "generate once, serve from storage" pattern as the word pair itself.
     """
 
     def __init__(self, session: AsyncSession, provider: LLMProvider):
@@ -79,7 +79,8 @@ class DailyContentService:
                     "lower expression of consciousness), write a short guided reflection of 2-3 sentences that "
                     "helps the reader notice where each shows up in their life today and gently invites them "
                     "to lean toward the higher one. Warm, grounded, and non-preachy, in the second person "
-                    "('you'). No headings, no lists, no quotation marks — just the reflection itself."
+                    "('you'). No headings, no lists, and no quotation marks. Write with simple punctuation: "
+                    "never use em dashes, en dashes, or double hyphens; use commas or periods instead."
                 ),
                 user_prompt=f"Higher word: '{word_a}'. Lower word: '{word_b}'. Write today's guided contemplation.",
                 temperature=0.8,

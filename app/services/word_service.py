@@ -62,7 +62,7 @@ BANNED_TRIVIAL = {
 
 # Curated word pools for the last-resort fallback (Power vs Force style). The generator pairs the
 # first still-unused "higher" (virtue) word with the first still-unused "lower" (vice) word, so a
-# valid contrasting pair stays available even as the used-word set grows — far more robust than
+# valid contrasting pair stays available even as the used-word set grows, far more robust than
 # fixed pairs. Only reached if the LLM can't produce a novel pair, so the daily prompt never 500s.
 FALLBACK_HIGHER: list[str] = [
     "courage", "acceptance", "serenity", "willingness", "compassion", "gratitude", "humility",
@@ -167,7 +167,7 @@ class WordService:
             "opposites (up/down, hot/cold, left/right, big/small, light/dark), colors, numbers, "
             "or generic yes/no. The words should feel substantial for journaling and reflection. "
             "Each must be a single, common, real English dictionary word (for example: courage, "
-            "apathy, humility, resentment) — never a compound, concatenation, hyphenated word, or "
+            "apathy, humility, resentment). Never use a compound, concatenation, hyphenated word, or "
             "multi-word phrase. "
             "Return exactly two lowercase words separated by a comma, and nothing else."
         )
