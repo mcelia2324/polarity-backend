@@ -136,3 +136,43 @@ async def test_rejects_concatenated_non_words():
         assert {pair.word_a, pair.word_b} == {"humility", "arrogance"}
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_word_reusable_after_window():
+    """A word used long ago (beyond WORD_REUSE_AFTER_DAYS) becomes available again."""
+    engine, session_factory = await _setup_db()
+
+    async with session_factory() as session:
+        llm = StubLLM(["hope, despair"])
+        service = WordService(session, llm)
+        await service.ensure_pair_for_date(dt.date(2025, 1, 1))
+
+    # ~535 days later, "hope" may be paired again.
+    async with session_factory() as session:
+        llm = StubLLM(["hope, fear"])
+        service = WordService(session, llm)
+        pair = await service.ensure_pair_for_date(dt.date(2026, 6, 19))
+        assert {pair.word_a, pair.word_b} == {"hope", "fear"}
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_word_not_reused_within_window():
+    """A word used recently (within the window) is NOT reused even days later."""
+    engine, session_factory = await _setup_db()
+
+    async with session_factory() as session:
+        llm = StubLLM(["hope, despair"])
+        service = WordService(session, llm)
+        await service.ensure_pair_for_date(dt.date(2026, 6, 1))
+
+    async with session_factory() as session:
+        # "hope" was used 18 days ago (< 180): the repeat is rejected, the fresh pair wins.
+        llm = StubLLM(["hope, fear", "courage, doubt"])
+        service = WordService(session, llm)
+        pair = await service.ensure_pair_for_date(dt.date(2026, 6, 19))
+        assert {pair.word_a, pair.word_b} == {"courage", "doubt"}
+
+    await engine.dispose()

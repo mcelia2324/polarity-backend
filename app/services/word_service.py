@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from wordfreq import zipf_frequency
@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 # non-words the model sometimes emits to satisfy the single-word format (e.g. "innerstillness",
 # "selfrighteousness") score ~0, so this cleanly rejects them.
 MIN_WORD_ZIPF = 1.5
+
+# How long a word stays "used" before it may appear again. Word-level uniqueness within this
+# window keeps the daily pair fresh, while allowing long-term reuse so the finite pool of common
+# virtue/vice words never truly runs out (which previously forced the curated fallback).
+WORD_REUSE_AFTER_DAYS = 180
+
 BANNED_TRIVIAL = {
     "up",
     "down",
@@ -167,9 +173,18 @@ class WordService:
         )
         return LLMRequest(system_prompt=system_prompt, user_prompt=user_prompt, temperature=0.9, max_tokens=16)
 
-    async def _words_available(self, word_a: str, word_b: str) -> bool:
+    async def _words_available(self, word_a: str, word_b: str, on_date: dt.date) -> bool:
+        """A word is available unless it appeared in a pair within the last
+        WORD_REUSE_AFTER_DAYS days (relative to the date being generated)."""
+        cutoff = on_date - dt.timedelta(days=WORD_REUSE_AFTER_DAYS)
         result = await self._session.execute(
-            select(UsedWord.word).where(UsedWord.word.in_([word_a, word_b]))
+            select(WordPair.id).where(
+                WordPair.date >= cutoff,
+                or_(
+                    WordPair.word_a.in_([word_a, word_b]),
+                    WordPair.word_b.in_([word_a, word_b]),
+                ),
+            )
         )
         return result.first() is None
 
@@ -211,16 +226,17 @@ class WordService:
                 logger.info("Filtered non-dictionary word(s) on attempt %d: %s, %s", attempt, word_a, word_b)
                 _reject(word_a, word_b)
                 continue
-            if not await self._words_available(word_a, word_b):
-                logger.info("Duplicate word(s) on attempt %d: %s, %s", attempt, word_a, word_b)
+            if not await self._words_available(word_a, word_b, date):
+                logger.info("Recently used word(s) on attempt %d: %s, %s", attempt, word_a, word_b)
                 _reject(word_a, word_b)
                 continue
 
             pair = WordPair(date=date, word_a=word_a, word_b=word_b)
             try:
                 self._session.add(pair)
-                self._session.add(UsedWord(word=word_a, pair=pair))
-                self._session.add(UsedWord(word=word_b, pair=pair))
+                await self._session.flush()
+                await self._mark_used(word_a, pair.id)
+                await self._mark_used(word_b, pair.id)
                 await self._session.commit()
                 logger.info("Generated pair for %s on attempt %d: %s, %s", date, attempt, word_a, word_b)
                 return pair
@@ -245,28 +261,45 @@ class WordService:
 
         raise WordGenerationError("Unable to generate a new unique word pair after several attempts.")
 
-    async def _first_available(self, candidates: list[str]) -> str | None:
-        """First candidate word that is not in BANNED_TRIVIAL and has never been used."""
+    async def _mark_used(self, word: str, pair_id: int) -> None:
+        """Record (or refresh) a word's most-recent use. Upsert keeps the single-row-per-word
+        UsedWord schema while allowing a word to be chosen again once its previous use ages out."""
+        now = dt.datetime.now(dt.timezone.utc)
+        result = await self._session.execute(select(UsedWord).where(UsedWord.word == word))
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            existing.created_at = now
+            existing.pair_id = pair_id
+        else:
+            self._session.add(UsedWord(word=word, pair_id=pair_id, created_at=now))
+
+    async def _first_available(self, candidates: list[str], on_date: dt.date) -> str | None:
+        """First candidate not in BANNED_TRIVIAL and not used within WORD_REUSE_AFTER_DAYS days."""
+        cutoff = on_date - dt.timedelta(days=WORD_REUSE_AFTER_DAYS)
         result = await self._session.execute(
-            select(UsedWord.word).where(UsedWord.word.in_(candidates))
+            select(WordPair.word_a, WordPair.word_b).where(WordPair.date >= cutoff)
         )
-        used = {row[0] for row in result.all()}
+        recent: set[str] = set()
+        for row in result.all():
+            recent.add(row[0])
+            recent.add(row[1])
         for word in candidates:
-            if word not in used and word not in BANNED_TRIVIAL:
+            if word not in recent and word not in BANNED_TRIVIAL:
                 return word
         return None
 
     async def _fallback_pair(self, date: dt.date) -> WordPair | None:
-        """Pair the first still-unused 'higher' word with the first still-unused 'lower' word."""
-        higher = await self._first_available(FALLBACK_HIGHER)
-        lower = await self._first_available(FALLBACK_LOWER)
+        """Pair the first not-recently-used 'higher' word with the first 'lower' one."""
+        higher = await self._first_available(FALLBACK_HIGHER, date)
+        lower = await self._first_available(FALLBACK_LOWER, date)
         if higher is None or lower is None or higher == lower:
             return None
         pair = WordPair(date=date, word_a=higher, word_b=lower)
         try:
             self._session.add(pair)
-            self._session.add(UsedWord(word=higher, pair=pair))
-            self._session.add(UsedWord(word=lower, pair=pair))
+            await self._session.flush()
+            await self._mark_used(higher, pair.id)
+            await self._mark_used(lower, pair.id)
             await self._session.commit()
             return pair
         except IntegrityError:
