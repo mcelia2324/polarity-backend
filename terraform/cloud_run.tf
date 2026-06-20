@@ -7,7 +7,7 @@ resource "google_cloud_run_v2_service" "backend" {
     service_account = google_service_account.cloud_run.email
 
     scaling {
-      min_instance_count = 1
+      min_instance_count = 0
       max_instance_count = 2
     }
 

@@ -13,6 +13,7 @@ class WordPairResponse(BaseModel):
     word_b_definition: str | None = None
     quote: str | None = None
     quote_author: str | None = None
+    contemplation: str | None = None
 
 
 class HistoryResponse(BaseModel):

@@ -85,3 +85,16 @@ class WordDefinition(Base):
     source: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class DailyContent(Base):
+    """Daily 'extras' (quote + guided contemplation) generated once per day for all users and
+    persisted, so they cost a single LLM generation per day regardless of traffic or instances."""
+
+    __tablename__ = "daily_content"
+
+    date: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quote_author: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    contemplation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

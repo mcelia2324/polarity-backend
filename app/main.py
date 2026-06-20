@@ -16,6 +16,7 @@ from app.config import settings as env_settings
 from app.db import SessionLocal, init_db, wait_for_db
 from app.models import Delivery, DeviceToken, WordDefinition, WordPair
 from app.schemas import DeviceRegisterRequest, DeviceToggleRequest, HistoryResponse, WordPairResponse
+from app.services.daily_content_service import DailyContentService
 from app.services.definition_service import DefinitionService
 from app.services.llm import build_provider
 from app.services.push.apns import APNSClient
@@ -232,6 +233,12 @@ async def _run_daily() -> dict:
         except Exception:
             logger.warning("Failed to pre-cache definitions", exc_info=True)
 
+        # Pre-generate the daily quote + contemplation so they are ready (one generation per day).
+        try:
+            await DailyContentService(session, provider).get_or_create(today, pair.word_a, pair.word_b)
+        except Exception:
+            logger.warning("Failed to pre-generate daily content", exc_info=True)
+
         message = (
             f"Polarity for {today.strftime('%B %d, %Y')}:\n"
             f"{format_pair_display(pair.word_a, pair.word_b)}\n"
@@ -364,30 +371,8 @@ async def api_word_of_day():
         word_a_definition = await definition_service.get_definition(pair.word_a)
         word_b_definition = await definition_service.get_definition(pair.word_b)
 
-        # Generate a daily quote related to the words
-        quote_text = None
-        quote_author = None
-        try:
-            from app.services.llm import LLMRequest
-            raw = await provider.generate(LLMRequest(
-                system_prompt=(
-                    "You provide a single inspiring quote related to one or both of the given words. "
-                    "The quote should be from a real, well-known person (philosopher, author, leader, thinker). "
-                    "Format: the quote text on the first line, then a newline, then just the author's name. "
-                    "No quotation marks. No extra commentary."
-                ),
-                user_prompt=f"Give an inspiring quote related to '{pair.word_a}' or '{pair.word_b}'.",
-                temperature=0.7,
-                max_tokens=100,
-            ))
-            lines = [l.strip() for l in raw.strip().splitlines() if l.strip()]
-            if len(lines) >= 2:
-                quote_text = lines[0].strip('"').strip("'")
-                quote_author = lines[-1].lstrip("—–- ").strip()
-            elif lines:
-                quote_text = lines[0].strip('"').strip("'")
-        except Exception:
-            logger.warning("Failed to generate daily quote", exc_info=True)
+        # Daily quote + guided contemplation: generated once per day for everyone and persisted.
+        daily = await DailyContentService(session, provider).get_or_create(today, pair.word_a, pair.word_b)
 
         response_data = {
             "date": today_str,
@@ -395,8 +380,9 @@ async def api_word_of_day():
             "word_b": pair.word_b,
             "word_a_definition": word_a_definition,
             "word_b_definition": word_b_definition,
-            "quote": quote_text,
-            "quote_author": quote_author,
+            "quote": daily.quote,
+            "quote_author": daily.quote_author,
+            "contemplation": daily.contemplation,
         }
 
         # Cache and evict stale entries (keep only today)
