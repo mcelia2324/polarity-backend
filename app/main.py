@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 import time
 from collections import defaultdict
 from zoneinfo import ZoneInfo
@@ -337,11 +338,25 @@ async def cron_diagnostics(x_cron_secret: str | None = Header(None, alias="X-Cro
         key_id = await store.get_str("apns_key_id")
         team_id = await store.get_str("apns_team_id")
         bundle_id = await store.get_str("apns_bundle_id")
-        auth_key = await store.get_str("apns_auth_key")
-        auth_key_from_volume = APNSClient._try_volume_key() is not None
+        inline = await store.get_str("apns_auth_key")
+        resolved = APNSClient._resolve_auth_key(inline)
         use_sandbox = await store.get_bool("apns_use_sandbox", True)
 
-        apns_configured = bool(key_id and team_id and bundle_id and (auth_key or auth_key_from_volume))
+        def _is_placeholder(v: str | None) -> bool:
+            return (v or "").strip().upper() == "PLACEHOLDER"
+
+        inline_usable = bool(inline and (inline.strip().startswith("-----BEGIN") or os.path.exists(inline.strip())))
+        if not resolved:
+            auth_key_source = "none"
+        elif inline_usable:
+            auth_key_source = "inline"
+        else:
+            auth_key_source = "volume"
+
+        apns_configured = bool(
+            key_id and team_id and bundle_id and resolved
+            and not _is_placeholder(key_id) and not _is_placeholder(team_id)
+        )
 
         total = await session.scalar(select(func.count()).select_from(DeviceToken)) or 0
         enabled = await session.scalar(
@@ -376,11 +391,13 @@ async def cron_diagnostics(x_cron_secret: str | None = Header(None, alias="X-Cro
         return {
             "apns_configured": apns_configured,
             "apns_fields_present": {
-                "key_id": bool(key_id),
-                "team_id": bool(team_id),
+                "key_id_present": bool(key_id),
+                "key_id_is_placeholder": _is_placeholder(key_id),
+                "team_id_present": bool(team_id),
+                "team_id_is_placeholder": _is_placeholder(team_id),
                 "bundle_id": bundle_id,  # public value, safe to show; verify it is mcelia.PolarityApp
-                "auth_key_inline": bool(auth_key),
-                "auth_key_volume": auth_key_from_volume,
+                "auth_key_source": auth_key_source,  # 'inline' | 'volume' | 'none'
+                "auth_key_is_valid_pem": bool(resolved),  # false when the .p8 secret is still a placeholder
             },
             "use_sandbox": use_sandbox,
             "apns_host": "api.sandbox.push.apple.com" if use_sandbox else "api.push.apple.com",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -37,12 +38,10 @@ class APNSClient:
         key_id = await settings_store.get_str("apns_key_id")
         team_id = await settings_store.get_str("apns_team_id")
         bundle_id = await settings_store.get_str("apns_bundle_id")
-        auth_key = await settings_store.get_str("apns_auth_key")
+        inline = await settings_store.get_str("apns_auth_key")
         use_sandbox = await settings_store.get_bool("apns_use_sandbox", True)
 
-        # Try Secret Manager volume mount if auth_key not in DB
-        if not auth_key:
-            auth_key = cls._try_volume_key()
+        auth_key = cls._resolve_auth_key(inline)
 
         if not key_id or not team_id or not bundle_id or not auth_key:
             return None
@@ -54,6 +53,22 @@ class APNSClient:
             auth_key=auth_key,
             use_sandbox=bool(use_sandbox),
         ))
+
+    @classmethod
+    def _resolve_auth_key(cls, inline: str | None) -> str | None:
+        """Pick a usable auth key, or None if there isn't a real one. An inline setting is
+        honored only when it is an actual PEM or an existing file path. The mounted secret
+        is honored only when its content is a real PEM. A placeholder (e.g. the literal
+        string "PLACEHOLDER", used to scaffold the secret before the real key is uploaded)
+        is treated as absent, so push degrades to 'not configured' instead of crashing."""
+        if inline:
+            candidate = inline.strip()
+            if candidate.startswith("-----BEGIN") or os.path.exists(candidate):
+                return candidate
+        volume = cls._try_volume_key()
+        if volume and volume.strip().startswith("-----BEGIN"):
+            return volume
+        return None
 
     def _load_private_key(self) -> str:
         auth_key = self._config.auth_key.strip()
