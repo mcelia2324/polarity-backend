@@ -6,15 +6,17 @@ import time
 from collections import defaultdict
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Header, HTTPException, Request
+import httpx
+
+from fastapi import Body, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response as StarletteResponse
 
 from app.config import settings as env_settings
 from app.db import SessionLocal, init_db, wait_for_db
-from app.models import Delivery, DeviceToken, WordDefinition, WordPair
+from app.models import Delivery, DeviceToken, Setting, WordDefinition, WordPair
 from app.schemas import DeviceRegisterRequest, DeviceToggleRequest, HistoryResponse, WordPairResponse
 from app.services.daily_content_service import DailyContentService
 from app.services.definition_service import DefinitionService
@@ -298,12 +300,162 @@ async def _run_daily() -> dict:
             raise
 
 
-@app.post("/cron/daily")
-async def cron_daily(x_cron_secret: str | None = Header(None, alias="X-Cron-Secret")):
+def _require_cron_secret(x_cron_secret: str | None) -> None:
     expected = env_settings.cron_secret
     if not expected or x_cron_secret != expected:
         raise HTTPException(status_code=403, detail="Forbidden")
+
+
+@app.post("/cron/daily")
+async def cron_daily(x_cron_secret: str | None = Header(None, alias="X-Cron-Secret")):
+    _require_cron_secret(x_cron_secret)
     return await _run_daily()
+
+
+# ---------------------------------------------------------------------------
+# Push diagnostics + runtime admin (guarded by the cron secret)
+#
+# These turn "push does not work" from a guessing game into a single call. They
+# never return secret values, only whether each piece is present and what APNs
+# actually replied.
+# ---------------------------------------------------------------------------
+
+def _http2_available() -> bool:
+    try:
+        import h2  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+@app.get("/cron/diagnostics")
+async def cron_diagnostics(x_cron_secret: str | None = Header(None, alias="X-Cron-Secret")):
+    _require_cron_secret(x_cron_secret)
+    async with SessionLocal() as session:
+        store = SettingsStore(session)
+
+        key_id = await store.get_str("apns_key_id")
+        team_id = await store.get_str("apns_team_id")
+        bundle_id = await store.get_str("apns_bundle_id")
+        auth_key = await store.get_str("apns_auth_key")
+        auth_key_from_volume = APNSClient._try_volume_key() is not None
+        use_sandbox = await store.get_bool("apns_use_sandbox", True)
+
+        apns_configured = bool(key_id and team_id and bundle_id and (auth_key or auth_key_from_volume))
+
+        total = await session.scalar(select(func.count()).select_from(DeviceToken)) or 0
+        enabled = await session.scalar(
+            select(func.count()).select_from(DeviceToken).where(DeviceToken.enabled == True)
+        ) or 0
+
+        recent = (
+            await session.execute(
+                select(DeviceToken).order_by(DeviceToken.updated_at.desc()).limit(5)
+            )
+        ).scalars().all()
+        tokens_sample = [
+            {
+                "token_suffix": t.token[-6:],
+                "platform": t.platform,
+                "enabled": t.enabled,
+                "last_notified_at": t.last_notified_at.isoformat() if t.last_notified_at else None,
+                "last_error": t.last_error,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            }
+            for t in recent
+        ]
+
+        deliveries = (
+            await session.execute(select(Delivery).order_by(Delivery.date.desc()).limit(5))
+        ).scalars().all()
+        deliveries_sample = [
+            {"date": d.date.isoformat(), "channel": d.channel, "status": d.status, "error": d.error}
+            for d in deliveries
+        ]
+
+        return {
+            "apns_configured": apns_configured,
+            "apns_fields_present": {
+                "key_id": bool(key_id),
+                "team_id": bool(team_id),
+                "bundle_id": bundle_id,  # public value, safe to show; verify it is mcelia.PolarityApp
+                "auth_key_inline": bool(auth_key),
+                "auth_key_volume": auth_key_from_volume,
+            },
+            "use_sandbox": use_sandbox,
+            "apns_host": "api.sandbox.push.apple.com" if use_sandbox else "api.push.apple.com",
+            "http2_available": _http2_available(),
+            "device_tokens": {"total": total, "enabled": enabled},
+            "recent_tokens": tokens_sample,
+            "recent_deliveries": deliveries_sample,
+        }
+
+
+@app.post("/cron/settings")
+async def cron_set_setting(
+    x_cron_secret: str | None = Header(None, alias="X-Cron-Secret"),
+    payload: dict = Body(...),
+):
+    """Set a runtime setting (e.g. flip apns_use_sandbox to false without a redeploy).
+    Only a small allowlist of non-secret operational keys is writable here."""
+    _require_cron_secret(x_cron_secret)
+    allowed = {"apns_use_sandbox", "apns_bundle_id", "send_hour", "send_minute", "app_timezone"}
+    key = payload.get("key")
+    value = payload.get("value")
+    if key not in allowed:
+        raise HTTPException(status_code=400, detail=f"Key not allowed. Allowed: {sorted(allowed)}")
+    if value is None:
+        raise HTTPException(status_code=400, detail="Missing value")
+    async with SessionLocal() as session:
+        store = SettingsStore(session)
+        await store.set_value(key, str(value))
+        await session.commit()
+    return {"status": "ok", "key": key, "value": str(value)}
+
+
+@app.post("/cron/push-test")
+async def cron_push_test(
+    x_cron_secret: str | None = Header(None, alias="X-Cron-Secret"),
+    payload: dict | None = Body(None),
+):
+    """Send a single test push and return exactly what APNs replied (status + reason),
+    so a failure like BadDeviceToken or BadTopic is visible immediately. Targets the
+    token suffix in the body {"token_suffix": "abc123"} if given, else the most recently
+    updated enabled token."""
+    _require_cron_secret(x_cron_secret)
+    async with SessionLocal() as session:
+        store = SettingsStore(session)
+        client = await APNSClient.from_settings(store)
+        if client is None:
+            return {"status": "apns_not_configured"}
+
+        suffix = (payload or {}).get("token_suffix")
+        query = select(DeviceToken).where(DeviceToken.enabled == True)
+        if suffix:
+            query = query.where(DeviceToken.token.like(f"%{suffix}"))
+        target = (await session.execute(query.order_by(DeviceToken.updated_at.desc()).limit(1))).scalar_one_or_none()
+        if target is None:
+            return {"status": "no_matching_token"}
+
+        headers = {
+            "apns-topic": client._config.bundle_id,
+            "authorization": f"bearer {client._get_jwt()}",
+            "apns-push-type": "alert",
+        }
+        body = {"aps": {"alert": {"title": "Polarity", "body": "Test notification. You can ignore this."}, "sound": "default"}}
+        url = f"{client._endpoint()}/3/device/{target.token}"
+        try:
+            async with httpx.AsyncClient(http2=True, timeout=20) as http:
+                resp = await http.post(url, json=body, headers=headers)
+            return {
+                "status": "sent" if resp.status_code == 200 else "failed",
+                "http_status": resp.status_code,
+                "apns_reason": resp.text or None,
+                "apns_host": client._endpoint(),
+                "token_suffix": target.token[-6:],
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "exception", "error": f"{type(exc).__name__}: {exc}", "http2_available": _http2_available()}
 
 
 @app.post("/cron/backfill")

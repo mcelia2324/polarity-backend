@@ -26,7 +26,10 @@ class Settings(BaseSettings):
     apns_team_id: str | None = None
     apns_bundle_id: str | None = None
     apns_auth_key: str | None = None
-    apns_use_sandbox: bool = True
+    # The shipped iOS app is signed with aps-environment = production, so its device
+    # tokens are production tokens and MUST be sent to the production APNs host.
+    # Sandbox is only correct for a locally-signed development build.
+    apns_use_sandbox: bool = False
 
     cron_secret: str | None = None
 
