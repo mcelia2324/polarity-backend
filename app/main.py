@@ -25,7 +25,12 @@ from app.services.llm import build_provider
 from app.services.push.apns import APNSClient
 from app.services.settings_store import SettingsStore
 from app.services.text_utils import normalize_dashes
-from app.services.word_service import WordService, format_pair_display
+from app.services.word_service import (
+    WORD_REUSE_AFTER_DAYS,
+    WordService,
+    format_pair_display,
+    prune_used_words,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -243,6 +248,15 @@ async def _run_daily() -> dict:
         except Exception:
             logger.warning("Failed to pre-generate daily content", exc_info=True)
 
+        # Automation: each day, clear the internal word bank of entries older than the reuse
+        # window so old words are free to return and the daily pair keeps feeling fresh.
+        try:
+            removed = await prune_used_words(session)
+            if removed:
+                logger.info("Pruned %d used-word entries older than the reuse window.", removed)
+        except Exception:
+            logger.warning("Used-word prune failed", exc_info=True)
+
         message = (
             f"Polarity for {today.strftime('%B %d, %Y')}:\n"
             f"{format_pair_display(pair.word_a, pair.word_b)}\n"
@@ -311,6 +325,22 @@ def _require_cron_secret(x_cron_secret: str | None) -> None:
 async def cron_daily(x_cron_secret: str | None = Header(None, alias="X-Cron-Secret")):
     _require_cron_secret(x_cron_secret)
     return await _run_daily()
+
+
+@app.post("/cron/cleanup")
+async def cron_cleanup(
+    x_cron_secret: str | None = Header(None, alias="X-Cron-Secret"),
+    older_than_days: int | None = None,
+):
+    """Clear the internal word bank (used-word hint list) of entries older than N days (defaults
+    to the reuse window). Old words become reusable through the pair-history window, so this only
+    tidies the hint table and never touches the daily pair history. The daily cron runs this
+    automatically; this endpoint is for clearing on demand."""
+    _require_cron_secret(x_cron_secret)
+    days = older_than_days if (older_than_days and older_than_days > 0) else WORD_REUSE_AFTER_DAYS
+    async with SessionLocal() as session:
+        removed = await prune_used_words(session, days)
+    return {"status": "ok", "pruned": removed, "older_than_days": days}
 
 
 # ---------------------------------------------------------------------------

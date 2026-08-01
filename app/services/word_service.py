@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Iterable
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from wordfreq import zipf_frequency
@@ -25,9 +25,11 @@ MIN_WORD_ZIPF = 1.5
 # How long a word stays "used" before it may appear again. The pool of genuinely common
 # reflection words (virtues, vices, states of consciousness) is only a few hundred deep, so a
 # long window drains it: with roughly one pair a day, a 180-day window meant every good word had
-# been used recently, the LLM's proposals were all rejected, and generation failed. 90 days keeps
-# the daily pair fresh while leaving enough headroom that a novel pair is almost always available.
-WORD_REUSE_AFTER_DAYS = 90
+# been used recently, the LLM's proposals were all rejected, and generation failed. A 30-day
+# window lets old words return after a month, which keeps the daily pair fresh and the pool full.
+# Reuse is governed entirely by this window over the pair history, so no data has to be deleted;
+# `prune_used_words` below only tidies the internal hint list.
+WORD_REUSE_AFTER_DAYS = 30
 
 BANNED_TRIVIAL = {
     "up",
@@ -143,6 +145,17 @@ def parse_two_words(text: str) -> tuple[str, str] | None:
 
 def format_pair_display(word_a: str, word_b: str) -> str:
     return f"{word_a.title()} vs {word_b.title()}"
+
+
+async def prune_used_words(session: AsyncSession, older_than_days: int = WORD_REUSE_AFTER_DAYS) -> int:
+    """Clear the internal 'word bank' (the UsedWord hint list) of entries older than the reuse
+    window, so it stays bounded and old words are free to come back. Reuse itself is driven by the
+    WordPair window, and the daily pair history is left untouched (the History tab needs it), so
+    this is safe to run on a schedule. Returns how many rows were removed."""
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=older_than_days)
+    result = await session.execute(delete(UsedWord).where(UsedWord.created_at < cutoff))
+    await session.commit()
+    return result.rowcount or 0
 
 
 class WordService:
