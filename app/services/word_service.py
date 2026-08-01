@@ -22,10 +22,12 @@ logger = logging.getLogger(__name__)
 # "selfrighteousness") score ~0, so this cleanly rejects them.
 MIN_WORD_ZIPF = 1.5
 
-# How long a word stays "used" before it may appear again. Word-level uniqueness within this
-# window keeps the daily pair fresh, while allowing long-term reuse so the finite pool of common
-# virtue/vice words never truly runs out (which previously forced the curated fallback).
-WORD_REUSE_AFTER_DAYS = 180
+# How long a word stays "used" before it may appear again. The pool of genuinely common
+# reflection words (virtues, vices, states of consciousness) is only a few hundred deep, so a
+# long window drains it: with roughly one pair a day, a 180-day window meant every good word had
+# been used recently, the LLM's proposals were all rejected, and generation failed. 90 days keeps
+# the daily pair fresh while leaving enough headroom that a novel pair is almost always available.
+WORD_REUSE_AFTER_DAYS = 90
 
 BANNED_TRIVIAL = {
     "up",
@@ -70,6 +72,9 @@ FALLBACK_HIGHER: list[str] = [
     "equanimity", "discernment", "magnanimity", "fortitude", "reverence", "patience", "kindness",
     "honesty", "wisdom", "empathy", "resilience", "optimism", "sincerity", "benevolence",
     "graciousness", "tranquility", "humor", "tenderness", "loyalty", "respect", "hope",
+    "peace", "joy", "love", "faith", "gentleness", "grace", "charity", "mercy", "integrity",
+    "calm", "presence", "openness", "warmth", "dignity", "steadiness", "wonder", "curiosity",
+    "diligence", "prudence", "fairness", "candor", "modesty", "contentment", "goodwill", "poise",
 ]
 FALLBACK_LOWER: list[str] = [
     "intimidation", "denial", "agitation", "resistance", "indifference", "entitlement", "arrogance",
@@ -77,6 +82,9 @@ FALLBACK_LOWER: list[str] = [
     "gullibility", "pettiness", "timidity", "contempt", "impatience", "cruelty", "folly", "callousness",
     "fragility", "pessimism", "insincerity", "malice", "hostility", "envy", "vanity", "blame",
     "complacency", "scorn", "deception", "despair",
+    "fear", "shame", "guilt", "grief", "anger", "pride", "craving", "jealousy", "spite", "dread",
+    "anxiety", "bitterness", "cynicism", "avoidance", "stubbornness", "recklessness", "coldness",
+    "conceit", "rancor", "sloth", "cowardice", "deceit", "hostility", "worry", "regret", "doubt",
 ]
 
 
@@ -288,10 +296,30 @@ class WordService:
                 return word
         return None
 
+    async def _least_recently_used(self, candidates: list[str], on_date: dt.date) -> str | None:
+        """The curated candidate that has gone longest without use (never-used first), ignoring
+        the reuse window entirely. This guarantees a choice from a non-empty pool, so the daily
+        pair can always be filled: a repeat from a while ago is always better than a 500."""
+        result = await self._session.execute(select(WordPair.word_a, WordPair.word_b, WordPair.date))
+        last_used: dict[str, dt.date] = {}
+        for word_a, word_b, used_on in result.all():
+            for w in (word_a, word_b):
+                if w not in last_used or used_on > last_used[w]:
+                    last_used[w] = used_on
+        usable = [w for w in candidates if w not in BANNED_TRIVIAL]
+        if not usable:
+            return None
+        # Never-used words (dt.date.min) sort first, then the oldest last-use.
+        usable.sort(key=lambda w: last_used.get(w, dt.date.min))
+        return usable[0]
+
     async def _fallback_pair(self, date: dt.date) -> WordPair | None:
-        """Pair the first not-recently-used 'higher' word with the first 'lower' one."""
-        higher = await self._first_available(FALLBACK_HIGHER, date)
-        lower = await self._first_available(FALLBACK_LOWER, date)
+        """Pair a 'higher' word with a 'lower' one. Prefer words not used within the reuse window;
+        if the pools are drained, fall back to the least-recently-used word so this never fails."""
+        higher = await self._first_available(FALLBACK_HIGHER, date) \
+            or await self._least_recently_used(FALLBACK_HIGHER, date)
+        lower = await self._first_available(FALLBACK_LOWER, date) \
+            or await self._least_recently_used(FALLBACK_LOWER, date)
         if higher is None or lower is None or higher == lower:
             return None
         pair = WordPair(date=date, word_a=higher, word_b=lower)
