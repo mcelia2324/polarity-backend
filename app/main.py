@@ -446,7 +446,10 @@ async def cron_set_setting(
     """Set a runtime setting (e.g. flip apns_use_sandbox to false without a redeploy).
     Only a small allowlist of non-secret operational keys is writable here."""
     _require_cron_secret(x_cron_secret)
-    allowed = {"apns_use_sandbox", "apns_bundle_id", "send_hour", "send_minute", "app_timezone"}
+    allowed = {
+        "apns_use_sandbox", "apns_bundle_id", "apns_key_id", "apns_team_id",
+        "send_hour", "send_minute", "app_timezone",
+    }
     key = payload.get("key")
     value = payload.get("value")
     if key not in allowed:
