@@ -39,11 +39,7 @@ resource "google_cloud_scheduler_job" "keep_warm" {
   region           = var.region
   schedule         = "*/5 * * * *"
   time_zone        = var.app_timezone
-  attempt_deadline = "180s"
-
-  retry_config {
-    retry_count = 0
-  }
+  attempt_deadline = "180s" # no retries (the default): the next run is 5 minutes away
 
   http_target {
     uri         = "${google_cloud_run_v2_service.backend.uri}/api/word-of-day"
