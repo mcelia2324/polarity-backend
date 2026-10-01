@@ -24,6 +24,16 @@ provider "google" {
   region  = var.region
 }
 
+# The Budget API is called against the billing account, so user credentials need an
+# explicit quota project. Scoped to an alias so other resources are unaffected.
+provider "google" {
+  alias                 = "billing"
+  project               = var.project_id
+  region                = var.region
+  billing_project       = var.project_id
+  user_project_override = true
+}
+
 resource "google_project_service" "apis" {
   for_each = toset([
     "run.googleapis.com",
@@ -31,9 +41,9 @@ resource "google_project_service" "apis" {
     "secretmanager.googleapis.com",
     "artifactregistry.googleapis.com",
     "cloudscheduler.googleapis.com",
-    "vpcaccess.googleapis.com",
     "compute.googleapis.com",
     "servicenetworking.googleapis.com",
+    "billingbudgets.googleapis.com",
   ])
 
   project            = var.project_id

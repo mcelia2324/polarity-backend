@@ -1,6 +1,7 @@
-project_id  = "polarity-488001"
-region      = "us-east1"
-environment = "prod"
+project_id         = "polarity-488001"
+billing_account_id = "01196D-A935FE-F8F049"
+region             = "us-east1"
+environment        = "prod"
 
 app_timezone = "America/Chicago"
 send_hour    = 8

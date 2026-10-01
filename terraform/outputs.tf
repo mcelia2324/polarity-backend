@@ -15,5 +15,5 @@ output "cloud_sql_private_ip" {
 
 output "artifact_registry_repo" {
   description = "Docker repository URL"
-  value       = "${var.region}-docker.pkg.dev/${var.project_id}/polarity/backend"
+  value       = "${var.region}-docker.pkg.dev/${var.project_id}/polarity/polarity-backend"
 }

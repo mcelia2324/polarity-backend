@@ -11,13 +11,19 @@ resource "google_cloud_run_v2_service" "backend" {
       max_instance_count = 2
     }
 
+    # Direct VPC egress: instances get an IP on the default subnet and reach Cloud SQL's
+    # private IP over the peering. Unlike a Serverless VPC Access connector there are no
+    # always-on VMs, so this costs nothing while the service is scaled to zero.
     vpc_access {
-      connector = google_vpc_access_connector.connector.id
-      egress    = "PRIVATE_RANGES_ONLY"
+      network_interfaces {
+        network    = "default"
+        subnetwork = "default"
+      }
+      egress = "PRIVATE_RANGES_ONLY"
     }
 
     containers {
-      image = "${var.region}-docker.pkg.dev/${var.project_id}/polarity/backend:latest"
+      image = "${var.region}-docker.pkg.dev/${var.project_id}/polarity/polarity-backend:latest"
 
       ports {
         container_port = 8000
