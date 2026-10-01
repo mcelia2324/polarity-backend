@@ -56,3 +56,27 @@ For APNs push:
 
 - Run a single scheduler instance to avoid duplicate daily sends.
 - Keep all secrets in environment variables or secret manager.
+
+## GCP Cost
+
+Target: well under $30/month. Actual billed cost for project `polarity-488001`
+(net of free tier) as of September 2026:
+
+| Service | Per month | Notes |
+| --- | --- | --- |
+| Cloud SQL (`db-f1-micro`, 10 GB HDD) | ~$8.50 | Always-on floor; >95% of the bill |
+| Secret Manager | ~$0.42 | 6 active versions are free; older versions count |
+| Artifact Registry | ~$0.02 | |
+| Cloud Run | $0.00 | Scales to zero; a few requests/day stays in free tier |
+| Serverless VPC connector | removed | Was ~$2.10/mo; replaced by Direct VPC egress |
+
+Things that quietly add a fixed monthly cost, so don't reintroduce them without a reason:
+
+- **`min_instance_count >= 1`** on Cloud Run: ~$4.75/mo (ran Mar–Jun 2026).
+- **A Serverless VPC Access connector**: 2+ VMs running 24/7. Cloud Run reaches Cloud SQL's
+  private IP through Direct VPC egress instead (`vpc_access.network_interfaces` in
+  `terraform/cloud_run.tf`), which has no idle cost.
+- **A larger Cloud SQL tier or SSD storage**: the database is ~76 MB at ~0.1% CPU.
+
+`terraform/budget.tf` emails the billing admins at 50% / 90% / 100% of `monthly_budget_usd`
+($30) and when the month is forecast to exceed it.

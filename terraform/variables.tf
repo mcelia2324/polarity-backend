@@ -9,6 +9,17 @@ variable "region" {
   default     = "us-east1"
 }
 
+variable "billing_account_id" {
+  description = "Billing account the project is charged to (for the budget alert)"
+  type        = string
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly spend that triggers budget alert emails"
+  type        = number
+  default     = 30
+}
+
 variable "environment" {
   description = "Environment name"
   type        = string

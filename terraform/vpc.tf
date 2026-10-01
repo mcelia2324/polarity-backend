@@ -16,17 +16,5 @@ resource "google_service_networking_connection" "private_vpc" {
   depends_on = [google_project_service.apis["servicenetworking.googleapis.com"]]
 }
 
-resource "google_vpc_access_connector" "connector" {
-  name          = "polarity-vpc"
-  region        = var.region
-  ip_cidr_range = "10.8.0.0/28"
-  network       = "default"
-
-  min_throughput = 200
-  max_throughput = 300
-
-  depends_on = [
-    google_project_service.apis["vpcaccess.googleapis.com"],
-    google_project_service.apis["compute.googleapis.com"],
-  ]
-}
+# No Serverless VPC Access connector: Cloud Run uses Direct VPC egress (see cloud_run.tf).
+# A connector runs at least 2 e2-micro VMs 24/7 (~$12/mo) even when the app has no traffic.
