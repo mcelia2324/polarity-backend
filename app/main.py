@@ -280,7 +280,8 @@ async def _run_daily() -> dict:
             return {"status": "ok", "date": today.isoformat(), "push": "already_sent"}
 
         try:
-            sent_count, failed = await apns_client.send_daily(pair, today, message, session)
+            # `failed` excludes tokens APNs reported dead (now disabled), so status covers active tokens only.
+            sent_count, failed, disabled = await apns_client.send_daily(pair, today, message, session)
             status = "sent" if failed == 0 else "partial"
 
             # Record delivery
@@ -297,8 +298,15 @@ async def _run_daily() -> dict:
                 delivery.error = error_msg
             await session.commit()
 
-            logger.info("APNs sent: %d, failed: %d", sent_count, failed)
-            return {"status": "ok", "date": today.isoformat(), "push": status, "sent": sent_count, "failed": failed}
+            logger.info("APNs sent: %d, failed: %d, invalid tokens disabled: %d", sent_count, failed, disabled)
+            return {
+                "status": "ok",
+                "date": today.isoformat(),
+                "push": status,
+                "sent": sent_count,
+                "failed": failed,
+                "disabled": disabled,
+            }
         except Exception as exc:
             logger.exception("Failed sending via apns")
             result = await session.execute(
