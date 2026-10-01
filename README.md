@@ -67,7 +67,8 @@ Target: well under $30/month. Actual billed cost for project `polarity-488001`
 | Cloud SQL (`db-f1-micro`, 10 GB HDD) | ~$8.50 | Always-on floor; >95% of the bill |
 | Secret Manager | ~$0.42 | 6 active versions are free; older versions count |
 | Artifact Registry | ~$0.02 | |
-| Cloud Run | $0.00 | Scales to zero; a few requests/day stays in free tier |
+| Cloud Run | $0.00 | Request-based billing; idle instances are free |
+| Cloud Scheduler | $0.00 | 2 jobs (daily cron + keep-warm); 3 are free per billing account |
 | Serverless VPC connector | removed | Was ~$2.10/mo; replaced by Direct VPC egress |
 
 Things that quietly add a fixed monthly cost, so don't reintroduce them without a reason:
@@ -77,6 +78,11 @@ Things that quietly add a fixed monthly cost, so don't reintroduce them without 
   private IP through Direct VPC egress instead (`vpc_access.network_interfaces` in
   `terraform/cloud_run.tf`), which has no idle cost.
 - **A larger Cloud SQL tier or SSD storage**: the database is ~76 MB at ~0.1% CPU.
+
+Cold starts take ~7s (container + Python startup), so the `polarity-keep-warm` Scheduler job
+fetches `/api/word-of-day` every 5 minutes. That keeps an instance warm and makes sure the new
+day's pair is generated right after midnight by the job, not by the first person to open the app.
+It costs nothing; `min_instance_count = 1` would do the same for ~$4.75/mo.
 
 `terraform/budget.tf` emails the billing admins at 50% / 90% / 100% of `monthly_budget_usd`
 ($30) and when the month is forecast to exceed it.

@@ -133,14 +133,16 @@ resource "google_cloud_run_v2_service" "backend" {
         mount_path = "/secrets/apns"
       }
 
+      # Poll every second so a cold instance takes traffic as soon as uvicorn is up. The old
+      # 3s delay + 5s period added up to 5s on top of every cold start.
       startup_probe {
         http_get {
           path = "/health"
         }
-        initial_delay_seconds = 3
-        period_seconds        = 5
-        failure_threshold     = 3
-        timeout_seconds       = 3
+        initial_delay_seconds = 0
+        period_seconds        = 1
+        failure_threshold     = 60
+        timeout_seconds       = 1
       }
 
       liveness_probe {
