@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import os
 import time
@@ -17,6 +18,23 @@ from app.services.settings_store import SettingsStore
 
 logger = logging.getLogger(__name__)
 
+# APNs reasons meaning the device token itself is dead (app uninstalled, token malformed or
+# from the other APNs environment), as opposed to a problem with our request or credentials.
+_INVALID_TOKEN_REASONS = {"Unregistered", "BadDeviceToken"}
+
+
+def is_invalid_token_response(status_code: int, body: str) -> bool:
+    """True when APNs rejected the token itself: any 410 (Unregistered / ExpiredToken), or a
+    reason of Unregistered / BadDeviceToken. Retrying such a token is pointless; it only becomes
+    usable again if the device re-registers it (POST /api/devices/register re-enables the row)."""
+    if status_code == 410:
+        return True
+    try:
+        reason = json.loads(body).get("reason")
+    except (ValueError, AttributeError):
+        return False
+    return reason in _INVALID_TOKEN_REASONS
+
 
 @dataclass
 class APNSConfig:
@@ -28,8 +46,9 @@ class APNSConfig:
 
 
 class APNSClient:
-    def __init__(self, config: APNSConfig):
+    def __init__(self, config: APNSConfig, transport: httpx.AsyncBaseTransport | None = None):
         self._config = config
+        self._transport = transport  # None = real network; tests pass an httpx.MockTransport
         self._jwt_token: str | None = None
         self._jwt_expiry: float = 0
 
@@ -121,11 +140,16 @@ class APNSClient:
         date: dt.date,
         message: str,
         session: AsyncSession,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int]:
+        """Push to every enabled token. Returns (sent, failed, disabled).
+
+        A token APNs reports as dead is disabled (row and last_error kept for audit) so it is
+        skipped from then on. It counts toward `disabled`, not `failed`, so `failed` covers only
+        tokens that are still active and the delivery status reflects real failures."""
         result = await session.execute(select(DeviceToken).where(DeviceToken.enabled == True))
         tokens = result.scalars().all()
         if not tokens:
-            return 0, 0
+            return 0, 0, 0
 
         payload = {
             "aps": {
@@ -148,17 +172,23 @@ class APNSClient:
 
         sent = 0
         failed = 0
-        async with httpx.AsyncClient(http2=True, timeout=20) as client:
+        disabled = 0
+        async with httpx.AsyncClient(http2=True, timeout=20, transport=self._transport) as client:
             for token in tokens:
                 url = f"{self._endpoint()}/3/device/{token.token}"
                 resp = await client.post(url, json=payload, headers=headers)
                 if resp.status_code == 200:
                     sent += 1
                     token.last_notified_at = dt.datetime.utcnow()
+                elif is_invalid_token_response(resp.status_code, resp.text):
+                    disabled += 1
+                    token.enabled = False
+                    token.last_error = resp.text
+                    logger.info("APNs rejected token %s as invalid, disabled it: %s", token.token[-6:], resp.text)
                 else:
                     failed += 1
                     token.last_error = resp.text
                     logger.warning("APNs send failed for token %s: %s", token.token[-6:], resp.text)
 
         await session.commit()
-        return sent, failed
+        return sent, failed, disabled

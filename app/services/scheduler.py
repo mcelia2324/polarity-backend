@@ -83,7 +83,7 @@ class SchedulerService:
                 return
 
             try:
-                sent_count, failed = await apns_client.send_daily(pair, today, message, session)
+                sent_count, failed, disabled = await apns_client.send_daily(pair, today, message, session)
                 status = "sent" if failed == 0 else "partial"
                 await self._record_delivery(
                     session,
@@ -92,7 +92,7 @@ class SchedulerService:
                     status,
                     None if failed == 0 else f"{failed} failed",
                 )
-                logger.info("APNs sent: %d, failed: %d", sent_count, failed)
+                logger.info("APNs sent: %d, failed: %d, invalid tokens disabled: %d", sent_count, failed, disabled)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Failed sending via apns")
                 await self._record_delivery(session, today, "apns", "failed", str(exc))
