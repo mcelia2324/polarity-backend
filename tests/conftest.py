@@ -1,20 +1,28 @@
-"""Shared test setup: in-memory SQLite and a scripted stub LLM, so nothing touches the real
-database or calls OpenAI.
+"""Shared test setup: in-memory SQLite, a scripted stub LLM, and an HTTP client for the app.
+
+The client goes through httpx.ASGITransport, which does not run the app's startup event, so the
+real database is never touched, and `build_provider` is replaced so nothing calls OpenAI.
 """
 from __future__ import annotations
 
 import datetime as dt
 import json
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import app.main as main
 from app.db import Base
 from app.models import DailyContent, Setting, WordDefinition, WordPair
+from app.services import content as content_module
 from app.services import definition_service
 from app.services.llm.base import LLMProvider, LLMProviderError, LLMRequest
+
+# The date the API treats as today in client tests.
+TODAY = dt.date(2026, 10, 15)
 
 # Replies that pass every check for the pair courage (higher) / fear (lower).
 CONTEMPLATION_OK = (
@@ -150,7 +158,42 @@ def _isolate_process_state(monkeypatch):
         return None
 
     monkeypatch.setattr(definition_service.DefinitionService, "_fetch_dictionary_definition", _no_dictionary)
+    monkeypatch.setattr(main, "_rate_limiter", main._RateLimitStore())
     definition_service._recent_failures.clear()
+    content_module._orientation_sources.cache_clear()
+    main._word_of_day_cache.clear()
     yield
     definition_service._recent_failures.clear()
+    main._word_of_day_cache.clear()
 
+
+@pytest.fixture
+def known_pairs(monkeypatch):
+    """Replace the orientation sources (pair bank, overrides) with in-memory ones:
+    known_pairs(bank=[KnownPair(...)], overrides=[KnownPair(...)])."""
+
+    def _set(bank=(), overrides=()):
+        sources = (
+            {content_module.pair_key(p.higher, p.lower): p for p in bank},
+            {content_module.pair_key(p.higher, p.lower): p for p in overrides},
+        )
+        monkeypatch.setattr(content_module, "_orientation_sources", lambda: sources)
+
+    return _set
+
+
+@pytest_asyncio.fixture
+async def client(monkeypatch, session_factory, stub):
+    """An HTTP client for the app, wired to the test database and the stub LLM, with today
+    fixed to TODAY and the cron secret set to "test-secret"."""
+
+    async def _provider(store, transport=None):
+        return stub
+
+    monkeypatch.setattr(main, "SessionLocal", session_factory)
+    monkeypatch.setattr(main, "build_provider", _provider)
+    monkeypatch.setattr(main, "_today", lambda timezone: TODAY)
+    monkeypatch.setattr(main.env_settings, "cron_secret", "test-secret")
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        yield http

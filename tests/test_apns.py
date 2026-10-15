@@ -148,10 +148,10 @@ class _OfflineExtras:
     def __init__(self, *args):
         pass
 
-    async def get_definition(self, word):
+    async def get_definition(self, word, **kwargs):
         return ""
 
-    async def get_or_create(self, *args):
+    async def get_or_create(self, *args, **kwargs):
         return None
 
 

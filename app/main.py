@@ -5,26 +5,29 @@ import logging
 import os
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 import httpx
 
 from fastapi import Body, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response as StarletteResponse
 
 from app.config import settings as env_settings
 from app.db import SessionLocal, init_db, wait_for_db
-from app.models import Delivery, DeviceToken, Setting, WordDefinition, WordPair
+from app.models import DailyContent, Delivery, DeviceToken, Setting, WordDefinition, WordPair
 from app.schemas import DeviceRegisterRequest, DeviceToggleRequest, HistoryResponse, WordPairResponse
+from app.services.content import CONTENT_EPOCH_KEY, assemble_day, build_day, bump_content_epoch, orient
 from app.services.daily_content_service import DailyContentService
 from app.services.definition_service import DefinitionService
 from app.services.llm import build_provider
 from app.services.push.apns import APNSClient
 from app.services.settings_store import SettingsStore
-from app.services.text_utils import normalize_dashes
 from app.services.word_service import (
     WORD_REUSE_AFTER_DAYS,
     WordService,
@@ -35,9 +38,25 @@ from app.services.word_service import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# In-memory cache for today's word-of-day response (single worker, safe as a dict).
-# Keyed by date string; automatically invalidated when the date rolls over.
-_word_of_day_cache: dict[str, dict] = {}
+
+# In-memory cache for today's word-of-day response (single worker, safe as a dict). Holds one
+# entry, keyed by "date|content_epoch", so it is dropped when the date rolls over or when any
+# instance bumps the content epoch. A complete response is kept for the rest of the day; an
+# incomplete one (content still generating or failed) only briefly, so a retry can fill it in.
+@dataclass
+class _CachedDay:
+    body: dict
+    complete: bool
+    expires_at: float  # _clock() value; inf for a complete response
+
+
+_word_of_day_cache: dict[str, _CachedDay] = {}
+_INCOMPLETE_TTL_SECONDS = 300
+_clock = time.monotonic
+
+
+def _word_of_day_headers(complete: bool) -> dict[str, str]:
+    return {"Cache-Control": "public, max-age=1800" if complete else "public, max-age=60"}
 
 
 # ---------------------------------------------------------------------------
@@ -90,15 +109,31 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 
 app = FastAPI(title="Polarity")
+# iOS sends Accept-Encoding: gzip by default; history with contemplations runs to a few hundred KB
+# uncompressed. Added before the rate limiter so it sits inside it and sees each response whole:
+# BaseHTTPMiddleware re-streams bodies in chunks, and GZip compresses any chunked body whatever
+# its size, which would defeat minimum_size.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.add_middleware(RateLimitMiddleware)
 
 
-async def _get_timezone(settings_store: SettingsStore) -> ZoneInfo:
-    tz_name = await settings_store.get_str("app_timezone", "UTC") or "UTC"
+def _today(timezone: ZoneInfo) -> dt.date:
+    return dt.datetime.now(timezone).date()
+
+
+async def _day_settings(session: AsyncSession) -> tuple[ZoneInfo, str]:
+    """The app timezone and the content epoch, read in one query (every word-of-day request runs
+    this, including cache hits)."""
+    result = await session.execute(
+        select(Setting.key, Setting.value).where(Setting.key.in_(("app_timezone", CONTENT_EPOCH_KEY)))
+    )
+    values = {key: value for key, value in result.all()}
+    tz_name = values.get("app_timezone") or env_settings.app_timezone or "UTC"
     try:
-        return ZoneInfo(tz_name)
+        timezone = ZoneInfo(tz_name)
     except Exception:
-        return ZoneInfo("UTC")
+        timezone = ZoneInfo("UTC")
+    return timezone, values.get(CONTENT_EPOCH_KEY) or "0"
 
 
 @app.on_event("startup")
@@ -232,19 +267,21 @@ async def _run_daily() -> dict:
         provider = await build_provider(settings_store)
         word_service = WordService(session, provider)
         pair = await word_service.ensure_pair_for_date(today)
+        orientation = orient(pair.word_a, pair.word_b)
 
         # Pre-cache definitions so the app never waits for them
         definition_service = DefinitionService(session, provider)
         try:
-            await definition_service.get_definition(pair.word_a)
-            await definition_service.get_definition(pair.word_b)
-            logger.info("Pre-cached definitions for %s, %s", pair.word_a, pair.word_b)
+            await definition_service.get_definition(orientation.higher)
+            await definition_service.get_definition(orientation.lower)
+            logger.info("Pre-cached definitions for %s, %s", orientation.higher, orientation.lower)
         except Exception:
             logger.warning("Failed to pre-cache definitions", exc_info=True)
 
         # Pre-generate the daily quote + contemplation so they are ready (one generation per day).
+        # Fills in whatever is still missing if the midnight attempt failed and its backoff passed.
         try:
-            await DailyContentService(session, provider).get_or_create(today, pair.word_a, pair.word_b)
+            await DailyContentService(session, provider).get_or_create(today, orientation.higher, orientation.lower)
         except Exception:
             logger.warning("Failed to pre-generate daily content", exc_info=True)
 
@@ -522,15 +559,16 @@ async def cron_backfill(
     force: bool = False,
     x_cron_secret: str | None = Header(None, alias="X-Cron-Secret"),
 ):
-    """Generate the pair (and cache definitions) for a specific date, e.g. to fill a gap.
+    """Generate the pair, its definitions and the day's quote + contemplation for a specific date,
+    e.g. to fill a gap.
 
-    Guarded by the cron secret. Idempotent by default: if a pair already exists for the date it
-    is returned unchanged. Pass force=true to discard an existing pair and regenerate it (the old
-    words stay marked used, so they are not reused). Does not send push notifications.
+    Guarded by the cron secret. Idempotent by default: an existing pair is kept and only missing
+    content is generated (ignoring the retry backoff, since this is a deliberate request). Pass
+    force=true to discard the date's pair and content and regenerate both (the old words stay
+    marked used, so they are not reused); the content epoch is bumped so every instance drops its
+    cached word-of-day response. Does not send push notifications.
     """
-    expected = env_settings.cron_secret
-    if not expected or x_cron_secret != expected:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_cron_secret(x_cron_secret)
     try:
         target = dt.date.fromisoformat(date)
     except ValueError:
@@ -539,21 +577,26 @@ async def cron_backfill(
     async with SessionLocal() as session:
         if force:
             # Direct DELETE so the DB's ON DELETE SET NULL handles referencing rows (async-safe,
-            # no ORM lazy-load). Used/journal rows keep their words but detach from the pair.
+            # no ORM lazy-load). Used/journal rows keep their words but detach from the pair. The
+            # day's quote and contemplation were written for the old pair, so they go too.
+            await session.execute(delete(DailyContent).where(DailyContent.date == target))
             await session.execute(delete(WordPair).where(WordPair.date == target))
+            await bump_content_epoch(session)  # caches drop the old pair now...
             await session.commit()
         store = SettingsStore(session)
         provider = await build_provider(store)
-        word_service = WordService(session, provider)
-        pair = await word_service.ensure_pair_for_date(target)
-        definition_service = DefinitionService(session, provider)
-        try:
-            await definition_service.get_definition(pair.word_a)
-            await definition_service.get_definition(pair.word_b)
-        except Exception:
-            logger.warning("Backfill: failed to pre-cache definitions for %s", target, exc_info=True)
+        response, complete = await build_day(session, provider, target, allow_generate=True, force=True)
+        if force:
+            await bump_content_epoch(session)  # ...and again once the new content exists
+            await session.commit()
 
-    return {"status": "ok", "date": target.isoformat(), "word_a": pair.word_a, "word_b": pair.word_b}
+    return {
+        "status": "ok",
+        "date": target.isoformat(),
+        "word_a": response.word_a,
+        "word_b": response.word_b,
+        "complete": complete,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -563,62 +606,62 @@ async def cron_backfill(
 @app.get("/api/word-of-day", response_model=WordPairResponse)
 async def api_word_of_day():
     async with SessionLocal() as session:
-        store = SettingsStore(session)
-        timezone = await _get_timezone(store)
-        today = dt.datetime.now(timezone).date()
-        today_str = today.isoformat()
+        timezone, epoch = await _day_settings(session)
+        today = _today(timezone)
+        cache_key = f"{today.isoformat()}|{epoch}"
 
         # Return from in-memory cache if available
-        if today_str in _word_of_day_cache:
-            return JSONResponse(
-                content=_word_of_day_cache[today_str],
-                headers={"Cache-Control": "public, max-age=1800"},
-            )
+        cached = _word_of_day_cache.get(cache_key)
+        if cached is not None and cached.expires_at > _clock():
+            return JSONResponse(content=cached.body, headers=_word_of_day_headers(cached.complete))
 
-        provider = await build_provider(store)
-        word_service = WordService(session, provider)
-        pair = await word_service.ensure_pair_for_date(today)
-        definition_service = DefinitionService(session, provider)
-        word_a_definition = await definition_service.get_definition(pair.word_a)
-        word_b_definition = await definition_service.get_definition(pair.word_b)
-
-        # Daily quote + guided contemplation: generated once per day for everyone and persisted.
-        daily = await DailyContentService(session, provider).get_or_create(today, pair.word_a, pair.word_b)
-
-        response_data = {
-            "date": today_str,
-            "word_a": pair.word_a,
-            "word_b": pair.word_b,
-            "word_a_definition": normalize_dashes(word_a_definition),
-            "word_b_definition": normalize_dashes(word_b_definition),
-            "quote": normalize_dashes(daily.quote),
-            "quote_author": normalize_dashes(daily.quote_author),
-            "contemplation": normalize_dashes(daily.contemplation),
-        }
+        provider = await build_provider(SettingsStore(session))
+        # Only the pair is required. If definitions or the daily content fail, build_day still
+        # returns the pair and every legacy field it can, marked incomplete.
+        response, complete = await build_day(session, provider, today, allow_generate=True)
+        body = response.model_dump(mode="json")
 
         # Cache and evict stale entries (keep only today)
         _word_of_day_cache.clear()
-        _word_of_day_cache[today_str] = response_data
-
-        return JSONResponse(
-            content=response_data,
-            headers={"Cache-Control": "public, max-age=1800"},
+        _word_of_day_cache[cache_key] = _CachedDay(
+            body=body,
+            complete=complete,
+            expires_at=float("inf") if complete else _clock() + _INCOMPLETE_TTL_SECONDS,
         )
+        return JSONResponse(content=body, headers=_word_of_day_headers(complete))
+
+
+def _history_item(
+    pair: WordPair, content: DailyContent | None, definitions: dict[str, str]
+) -> WordPairResponse:
+    try:
+        return assemble_day(
+            pair.date, pair.word_a, pair.word_b, content=content, definitions=definitions, serve_fallback=False
+        )[0]
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to assemble history for %s; serving the pair alone", pair.date)
+        return WordPairResponse(date=pair.date, word_a=pair.word_a, word_b=pair.word_b)
 
 
 @app.get("/api/history", response_model=HistoryResponse)
 async def api_history(days: int = 30):
+    """Past days, newest first, through the same assembler as word-of-day. Never generates
+    anything (one days=365 call must not trigger hundreds of LLM calls): each day shows what is
+    stored, with no fallback contemplation. Future-dated rows, e.g. from a backfill, are left out."""
     days = max(1, min(days, 365))
     async with SessionLocal() as session:
+        timezone, _epoch = await _day_settings(session)
+        today = _today(timezone)
         result = await session.execute(
-            select(WordPair).order_by(WordPair.date.desc()).limit(days)
+            select(WordPair, DailyContent)
+            .outerjoin(DailyContent, DailyContent.date == WordPair.date)
+            .where(WordPair.date <= today)
+            .order_by(WordPair.date.desc())
+            .limit(days)
         )
-        pairs = result.scalars().all()
+        rows = result.all()
         # Batch-fetch all definitions for the words in this history
-        all_words = set()
-        for row in pairs:
-            all_words.add(row.word_a.strip().lower())
-            all_words.add(row.word_b.strip().lower())
+        all_words = {word.strip().lower() for pair, _content in rows for word in (pair.word_a, pair.word_b)}
         defs: dict[str, str] = {}
         if all_words:
             def_result = await session.execute(
@@ -626,16 +669,7 @@ async def api_history(days: int = 30):
             )
             for wd in def_result.scalars().all():
                 defs[wd.word] = wd.definition
-        items = [
-            WordPairResponse(
-                date=row.date,
-                word_a=row.word_a,
-                word_b=row.word_b,
-                word_a_definition=normalize_dashes(defs.get(row.word_a.strip().lower())),
-                word_b_definition=normalize_dashes(defs.get(row.word_b.strip().lower())),
-            )
-            for row in pairs
-        ]
+        items = [_history_item(pair, content, defs) for pair, content in rows]
         return HistoryResponse(items=items)
 
 
