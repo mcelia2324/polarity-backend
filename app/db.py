@@ -23,6 +23,9 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSe
 
 
 async def init_db() -> None:
+    # Register every table before create_all; the migrations below fail if a table is missing.
+    import app.models  # noqa: F401  (imported here: app.models imports Base from this module)
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # create_all never adds columns to existing tables; app/migrations.py does (Postgres only).
