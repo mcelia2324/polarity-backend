@@ -1,6 +1,6 @@
 import datetime as dt
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, false, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -89,7 +89,11 @@ class WordDefinition(Base):
 
 class DailyContent(Base):
     """Daily 'extras' (quote + guided contemplation) generated once per day for all users and
-    persisted, so they cost a single LLM generation per day regardless of traffic or instances."""
+    persisted, so they cost a single LLM generation per day regardless of traffic or instances.
+
+    A NULL here is never final: a missing contemplation, or a quote that is not `quote_resolved`,
+    is retried with backoff (`attempts`, `last_attempt_at`). Columns after `created_at` were added
+    later; existing databases get them from app/migrations.py, so keep the two in step."""
 
     __tablename__ = "daily_content"
 
@@ -98,3 +102,11 @@ class DailyContent(Base):
     quote_author: Mapped[str | None] = mapped_column(String(128), nullable=True)
     contemplation: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # The named work the quote comes from (e.g. "Meditations").
+    quote_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # True once the quote is settled: either a quote passed the checks, or none good exists (quote
+    # stays NULL). False with a NULL quote means generation failed and will be retried.
+    quote_resolved: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    last_attempt_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    prompt_version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
