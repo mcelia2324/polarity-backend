@@ -193,7 +193,7 @@ PRIVACY_POLICY_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <h1>Privacy Policy</h1>
-<p class="updated">Last updated: March 6, 2026</p>
+<p class="updated">Last updated: October 15, 2026</p>
 
 <p><strong>Polarity Journal</strong> ("the App") is developed by an independent developer.
 Your privacy is important to us. This policy explains what data we collect and how we use it.</p>
@@ -221,8 +221,9 @@ Your privacy is important to us. This policy explains what data we collect and h
 </ul>
 
 <h2>Third-Party Services</h2>
-<p>The App uses OpenAI's API to generate daily word pairs. No personal data is sent to OpenAI,
-only requests for word generation.</p>
+<p>The App uses OpenAI's API to write supporting text for the daily words, such as definitions,
+a quote and a short contemplation. Only the daily words are sent to OpenAI. No personal data is
+sent, and your journal entries never reach our servers.</p>
 
 <h2>Data Storage &amp; Security</h2>
 <p>Push notification tokens are stored on Google Cloud Platform infrastructure with encryption at rest

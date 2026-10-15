@@ -15,7 +15,7 @@ The backend does not store user journal content.
 ## Tech Stack
 
 - FastAPI
-- APScheduler
+- Cloud Scheduler (calls `/cron/daily`, plus a keep-warm fetch of `/api/word-of-day`)
 - PostgreSQL (async SQLAlchemy)
 - APNs integration for iOS push
 
